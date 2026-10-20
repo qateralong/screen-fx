@@ -9,25 +9,23 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Stream;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,11 +41,6 @@ public class ScreenFx implements ModInitializer {
             Map.entry("lime", 0x80FF20), Map.entry("magenta", 0xFF20FF), Map.entry("brown", 0x7B4A1E));
     private static final SuggestionProvider<CommandSourceStack> EFFECTS = (context, builder) ->
             SharedSuggestionProvider.suggest(Stream.concat(FxType.ids().stream(), FxPresets.names().stream()), builder);
-    private static final List<Pending> PENDING = new ArrayList<>();
-    private static long serverTick;
-
-    private record Pending(long due, UUID player, FxPayload payload, String group) {
-    }
 
     private record Args(Float seconds, Float intensity, Float fade, String color, String params) {
     }
@@ -57,27 +50,9 @@ public class ScreenFx implements ModInitializer {
         PayloadTypeRegistry.playS2C().register(FxPayload.TYPE, FxPayload.CODEC);
         CommandRegistrationCallback.EVENT.register((dispatcher, access, environment) -> register(dispatcher));
         ServerLifecycleEvents.SERVER_STARTING.register(server -> FxPresets.load());
-        ServerLifecycleEvents.SERVER_STOPPED.register(server -> PENDING.clear());
-        ServerTickEvents.END_SERVER_TICK.register(ScreenFx::tick);
-    }
-
-    private static void tick(MinecraftServer server) {
-        serverTick++;
-        if (PENDING.isEmpty()) {
-            return;
-        }
-        Iterator<Pending> iterator = PENDING.iterator();
-        while (iterator.hasNext()) {
-            Pending pending = iterator.next();
-            if (pending.due > serverTick) {
-                continue;
-            }
-            iterator.remove();
-            ServerPlayer player = server.getPlayerList().getPlayer(pending.player);
-            if (player != null && ServerPlayNetworking.canSend(player, FxPayload.TYPE)) {
-                ServerPlayNetworking.send(player, pending.payload);
-            }
-        }
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> FxServer.reset());
+        ServerTickEvents.END_SERVER_TICK.register(FxServer::tick);
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> FxServer.restoreLater(handler.player));
     }
 
     private static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -162,72 +137,22 @@ public class ScreenFx implements ModInitializer {
         Collection<ServerPlayer> targets = EntityArgument.getPlayers(context, "targets");
         FxType type = FxType.byId(id);
         if (type != null) {
-            FxPayload payload = payload(type, args.seconds == null ? 3.0F : args.seconds, args.intensity, args.fade, args.fade, color, params, id);
-            return report(context, "Эффект " + id, targets, player -> send(player, payload, 0L, id));
+            FxPayload payload = FxServer.effect(type, args.seconds == null ? 3.0F : args.seconds, args.intensity, args.fade, args.fade, color, params);
+            return report(context, "Эффект " + id, targets, player -> FxServer.send(player, payload, 0L, id));
         }
         FxPresets.Preset preset = FxPresets.get(id);
         if (preset == null) {
             context.getSource().sendFailure(Component.literal("Неизвестный эффект или пресет: " + id + ". Список: /screenfx list"));
             return 0;
         }
-        float length = preset.length();
-        float scale = args.seconds != null && args.seconds > 0.0F && length > 0.0F ? args.seconds / length : 1.0F;
-        boolean hold = args.seconds != null && args.seconds == 0.0F;
-        float intensityScale = args.intensity == null ? 1.0F : args.intensity;
-        List<Pending> layers = new ArrayList<>();
-        for (int i = 0; i < preset.layers.size(); i++) {
-            FxPresets.Layer layer = preset.layers.get(i);
-            FxType layerType = FxType.byId(layer.effect);
-            float intensity = (layer.intensity == null ? layerType.intensity : layer.intensity) * intensityScale;
-            Float fadeIn = args.fade != null ? args.fade : layer.fadeIn == null ? null : layer.fadeIn * scale;
-            Float fadeOut = args.fade != null ? args.fade : layer.fadeOut == null ? null : layer.fadeOut * scale;
-            Integer layerColor = color != null ? color : layer.color == null ? null : parseColor(layer.color);
-            Map<String, String> layerParams = new LinkedHashMap<>(layer.params == null ? Map.of() : layer.params);
-            layerParams.putAll(params);
-            if (!layerParams.containsKey("key")) {
-                layerParams.put("key", layer.key != null ? layer.key : id + "#" + i);
-            }
-            FxPayload payload = payload(layerType, hold ? 0.0F : layer.seconds * scale, intensity, fadeIn, fadeOut, layerColor, layerParams, id);
-            layers.add(new Pending(Math.round(layer.delay * scale * 20.0F), null, payload, id));
-        }
-        return report(context, "Пресет " + id, targets, player -> {
-            for (Pending layer : layers) {
-                send(player, layer.payload, layer.due, id);
-            }
-        });
-    }
-
-    private static FxPayload payload(FxType type, float seconds, Float intensity, Float fadeIn, Float fadeOut, Integer color,
-                                     Map<String, String> params, String group) {
-        Map<String, String> extra = new LinkedHashMap<>(params);
-        String key = extra.remove("key");
-        Float in = number(extra.remove("in"));
-        Float out = number(extra.remove("out"));
-        Integer paramColor = extra.containsKey("color") ? parseColor(extra.remove("color")) : null;
-        float useFadeIn = in != null ? in : type == FxType.FLASH ? 0.0F : fadeIn != null ? fadeIn : type.fade;
-        float useFadeOut = out != null ? out : fadeOut != null ? fadeOut : type.fade;
-        int useColor = paramColor != null ? paramColor : color != null ? color : type.color;
-        return new FxPayload(type.id(), key == null ? type.id() : key.toLowerCase(Locale.ROOT), Math.round(seconds * 1000.0F),
-                Math.round(useFadeIn * 1000.0F), Math.round(useFadeOut * 1000.0F), intensity == null ? type.intensity : intensity, useColor, extra);
-    }
-
-    private static void send(ServerPlayer player, FxPayload payload, long delayTicks, String group) {
-        if (delayTicks <= 0L) {
-            ServerPlayNetworking.send(player, payload);
-        } else {
-            PENDING.add(new Pending(serverTick + delayTicks, player.getUUID(), payload, group));
-        }
+        List<FxServer.Scheduled> layers = FxServer.preset(id, preset, args.seconds, args.intensity, args.fade, color, params);
+        return report(context, "Пресет " + id, targets, player -> FxServer.sendAll(player, layers, id));
     }
 
     private static int clear(CommandContext<CommandSourceStack> context, String name) throws CommandSyntaxException {
         String target = name.toLowerCase(Locale.ROOT);
         Collection<ServerPlayer> targets = EntityArgument.getPlayers(context, "targets");
-        FxPayload payload = FxPayload.clear(target);
-        return report(context, target.isEmpty() ? "Все эффекты сняты" : "Снято: " + target, targets, player -> {
-            PENDING.removeIf(pending -> pending.player.equals(player.getUUID())
-                    && (target.isEmpty() || pending.group.equals(target) || pending.payload.key().equals(target) || pending.payload.effect().equals(target)));
-            ServerPlayNetworking.send(player, payload);
-        });
+        return report(context, target.isEmpty() ? "Все эффекты сняты" : "Снято: " + target, targets, player -> FxServer.clear(player, target));
     }
 
     private static int report(CommandContext<CommandSourceStack> context, String what, Collection<ServerPlayer> targets,
@@ -264,17 +189,6 @@ public class ScreenFx implements ModInitializer {
             params.put(token.substring(0, eq).toLowerCase(Locale.ROOT), token.substring(eq + 1));
         }
         return params;
-    }
-
-    private static Float number(String value) {
-        if (value == null) {
-            return null;
-        }
-        try {
-            return Math.max(0.0F, Float.parseFloat(value));
-        } catch (NumberFormatException e) {
-            return null;
-        }
     }
 
     public static Integer parseColor(String name) {
