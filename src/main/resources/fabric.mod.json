@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "screenfx",
+  "version": "${version}",
+  "name": "ScreenFX",
+  "description": "Server-triggered screen effects for players: blackout, flashes, fades, color filters, blur, shake and more.",
+  "authors": [
+    "qateralong"
+  ],
+  "license": "All Rights Reserved",
+  "icon": "assets/screenfx/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.qateralong.screenfx.ScreenFx"
+    ],
+    "client": [
+      "com.qateralong.screenfx.client.ScreenFxClient"
+    ]
+  },
+  "mixins": [
+    "screenfx.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
