@@ -3,7 +3,7 @@
   "id": "screenfx",
   "version": "${version}",
   "name": "ScreenFX",
-  "description": "Server-triggered screen effects for players: blackout, flashes, fades, color filters, blur, shake and more.",
+  "description": "Server-triggered screen effects: overlays, eyelids, frost, color filters, distortions, camera motion, resource-pack shaders and images, server presets.",
   "authors": [
     "qateralong"
   ],

@@ -7,15 +7,15 @@ import java.util.List;
 
 public final class FxManager {
     private static final List<ActiveFx> ACTIVE = new ArrayList<>();
+    private static List<ActiveFx> frame = List.of();
 
     private FxManager() {
     }
 
     public static synchronized void handle(FxPayload payload) {
-        if (payload.effect().startsWith(FxPayload.CLEAR)) {
-            String only = payload.effect().length() > FxPayload.CLEAR.length() + 1 ? payload.effect().substring(FxPayload.CLEAR.length() + 1) : "";
+        if (payload.effect().equals(FxPayload.CLEAR)) {
             for (ActiveFx fx : ACTIVE) {
-                if (only.isEmpty() || fx.type.id().equals(only)) {
+                if (fx.matches(payload.key())) {
                     fx.release();
                 }
             }
@@ -25,26 +25,33 @@ public final class FxManager {
         if (type == null) {
             return;
         }
+        ActiveFx added = new ActiveFx(type, payload);
         for (ActiveFx fx : ACTIVE) {
-            if (fx.type == type) {
+            if (fx.key.equals(added.key)) {
                 fx.release();
             }
         }
-        ACTIVE.add(new ActiveFx(type, payload.durationMs(), payload.fadeMs(), payload.intensity(), payload.color()));
+        ACTIVE.add(added);
     }
 
     public static synchronized List<ActiveFx> snapshot() {
         ACTIVE.removeIf(ActiveFx::finished);
-        return new ArrayList<>(ACTIVE);
+        frame = List.copyOf(ACTIVE);
+        return frame;
+    }
+
+    public static List<ActiveFx> current() {
+        return frame;
     }
 
     public static synchronized void clearAll() {
         ACTIVE.clear();
+        frame = List.of();
     }
 
     public static float strength(FxType type) {
         float total = 0.0F;
-        for (ActiveFx fx : snapshot()) {
+        for (ActiveFx fx : current()) {
             if (fx.type == type) {
                 total = Math.max(total, fx.strength());
             }

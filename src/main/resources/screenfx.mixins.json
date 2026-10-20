@@ -4,7 +4,9 @@
   "package": "com.qateralong.screenfx.client.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "GameRendererMixin"
+    "GameRendererMixin",
+    "GuiMixin",
+    "PostChainAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

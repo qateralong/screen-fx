@@ -4,6 +4,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.qateralong.screenfx.client.CameraFx;
+import com.qateralong.screenfx.client.FxManager;
 import com.qateralong.screenfx.client.PostFx;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -16,6 +17,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(GameRenderer.class)
 public abstract class GameRendererMixin {
+    @Inject(method = "render", at = @At("HEAD"))
+    private void screenfx$frame(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
+        FxManager.snapshot();
+    }
+
     @Inject(method = "render", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/pipeline/RenderTarget;bindWrite(Z)V", ordinal = 0))
     private void screenfx$post(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
         PostFx.process(deltaTracker.getGameTimeDeltaTicks());

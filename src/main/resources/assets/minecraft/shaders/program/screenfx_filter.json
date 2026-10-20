@@ -79,6 +79,24 @@
       "values": [
         0.0
       ]
+    },
+    {
+      "name": "FxTime",
+      "type": "float",
+      "count": 1,
+      "values": [
+        0.0
+      ]
+    },
+    {
+      "name": "Color",
+      "type": "float",
+      "count": 3,
+      "values": [
+        1.0,
+        1.0,
+        1.0
+      ]
     }
   ]
 }

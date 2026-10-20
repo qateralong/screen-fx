@@ -3,20 +3,21 @@ package com.qateralong.screenfx.client;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.qateralong.screenfx.FxType;
 import com.qateralong.screenfx.ScreenFx;
-import java.util.EnumMap;
+import com.qateralong.screenfx.client.mixin.PostChainAccessor;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.PostChain;
+import net.minecraft.client.renderer.PostPass;
 import net.minecraft.resources.ResourceLocation;
 
 public final class PostFx {
-    private static final Map<FxType, PostChain> CHAINS = new EnumMap<>(FxType.class);
-    private static final Set<FxType> FAILED = new HashSet<>();
-    private static int width;
-    private static int height;
+    private static final Map<ResourceLocation, PostChain> CHAINS = new HashMap<>();
+    private static final Map<ResourceLocation, long[]> SIZES = new HashMap<>();
+    private static final Set<ResourceLocation> FAILED = new HashSet<>();
 
     private PostFx() {
     }
@@ -25,30 +26,51 @@ public final class PostFx {
         Minecraft minecraft = Minecraft.getInstance();
         int w = minecraft.getWindow().getWidth();
         int h = minecraft.getWindow().getHeight();
-        boolean resized = w != width || h != height;
-        width = w;
-        height = h;
         float phase = (Util.getMillis() % 1_000_000L) / 1000.0F;
-        for (FxType type : FxType.values()) {
-            if (type.kind != FxType.Kind.POST) {
+        for (ActiveFx fx : FxManager.current()) {
+            if (fx.type.kind != FxType.Kind.POST) {
                 continue;
             }
-            float strength = FxManager.strength(type);
+            float strength = fx.strength();
             if (strength <= 0.001F) {
                 continue;
             }
-            PostChain chain = chain(type, minecraft);
+            ResourceLocation location = location(fx);
+            if (location == null) {
+                continue;
+            }
+            PostChain chain = chain(location, minecraft);
             if (chain == null) {
                 continue;
             }
-            if (resized) {
+            long[] size = SIZES.get(location);
+            if (size[0] != w || size[1] != h) {
                 chain.resize(w, h);
+                size[0] = w;
+                size[1] = h;
             }
-            if (type == FxType.BLUR) {
-                chain.setUniform("Radius", Math.min(40.0F, strength * 16.0F));
-            } else {
-                chain.setUniform("Amount", Math.min(4.0F, strength));
-                chain.setUniform("Phase", phase);
+            float r = ((fx.color >> 16) & 0xFF) / 255.0F;
+            float g = ((fx.color >> 8) & 0xFF) / 255.0F;
+            float b = (fx.color & 0xFF) / 255.0F;
+            for (PostPass pass : ((PostChainAccessor) chain).screenfx$passes()) {
+                var effect = pass.getEffect();
+                effect.safeGetUniform("Amount").set(Math.min(4.0F, strength));
+                effect.safeGetUniform("Phase").set(phase * fx.speed());
+                effect.safeGetUniform("FxTime").set(fx.time());
+                effect.safeGetUniform("Speed").set(fx.speed());
+                effect.safeGetUniform("Seed").set(fx.seed);
+                effect.safeGetUniform("Color").set(r, g, b);
+                if (fx.type == FxType.BLUR) {
+                    effect.safeGetUniform("Radius").set(Math.min(40.0F, strength * 16.0F));
+                }
+                for (Map.Entry<String, String> entry : fx.params.entrySet()) {
+                    if (entry.getKey().startsWith("u.")) {
+                        float[] values = floats(entry.getValue());
+                        if (values != null) {
+                            effect.safeGetUniform(entry.getKey().substring(2)).set(values);
+                        }
+                    }
+                }
             }
             RenderSystem.disableBlend();
             RenderSystem.disableDepthTest();
@@ -57,20 +79,52 @@ public final class PostFx {
         }
     }
 
-    private static PostChain chain(FxType type, Minecraft minecraft) {
-        PostChain chain = CHAINS.get(type);
-        if (chain != null || FAILED.contains(type)) {
+    private static float[] floats(String text) {
+        String[] parts = text.split(",");
+        float[] values = new float[parts.length];
+        try {
+            for (int i = 0; i < parts.length; i++) {
+                values[i] = Float.parseFloat(parts[i].trim());
+            }
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        return values;
+    }
+
+    private static ResourceLocation location(ActiveFx fx) {
+        if (fx.type == FxType.BLUR) {
+            return ResourceLocation.withDefaultNamespace("shaders/post/blur.json");
+        }
+        if (fx.type == FxType.SHADER) {
+            ResourceLocation id = ResourceLocation.tryParse(fx.text("id", ""));
+            if (id == null || fx.text("id", "").isEmpty()) {
+                return null;
+            }
+            String path = id.getPath();
+            if (!path.startsWith("shaders/post/")) {
+                path = "shaders/post/" + path;
+            }
+            if (!path.endsWith(".json")) {
+                path = path + ".json";
+            }
+            return id.withPath(path);
+        }
+        return ResourceLocation.fromNamespaceAndPath(ScreenFx.MOD_ID, "shaders/post/" + fx.type.id() + ".json");
+    }
+
+    private static PostChain chain(ResourceLocation location, Minecraft minecraft) {
+        PostChain chain = CHAINS.get(location);
+        if (chain != null || FAILED.contains(location)) {
             return chain;
         }
-        ResourceLocation location = type == FxType.BLUR
-                ? ResourceLocation.withDefaultNamespace("shaders/post/blur.json")
-                : ResourceLocation.fromNamespaceAndPath(ScreenFx.MOD_ID, "shaders/post/" + type.id() + ".json");
         try {
             chain = new PostChain(minecraft.getTextureManager(), minecraft.getResourceManager(), minecraft.getMainRenderTarget(), location);
             chain.resize(minecraft.getWindow().getWidth(), minecraft.getWindow().getHeight());
-            CHAINS.put(type, chain);
+            CHAINS.put(location, chain);
+            SIZES.put(location, new long[]{minecraft.getWindow().getWidth(), minecraft.getWindow().getHeight()});
         } catch (Exception e) {
-            FAILED.add(type);
+            FAILED.add(location);
             ScreenFxClient.LOGGER.error("Failed to load screen effect {}", location, e);
         }
         return chain;
@@ -81,6 +135,7 @@ public final class PostFx {
             chain.close();
         }
         CHAINS.clear();
+        SIZES.clear();
         FAILED.clear();
     }
 }
